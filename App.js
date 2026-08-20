@@ -10,7 +10,7 @@ import * as DocumentPicker from 'expo-document-picker';
 const LOCATION_TASK_NAME = 'BACKGROUND_LOCATION_RECORD';
 let globalRecordedPoints = [];
 
-// Định nghĩa task chạy ngầm ghi GPS
+// Tác vụ ghi GPS nền khi tắt màn hình
 TaskManager.defineTask(LOCATION_TASK_NAME, ({ data, error }) => {
   if (error) return;
   if (data) {
@@ -31,23 +31,40 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordedRoute, setRecordedRoute] = useState([]);
   const [loadedRoute, setLoadedRoute] = useState([]);
+  const [followUser, setFollowUser] = useState(true);
+  
+  // Trạng thái các loại bản đồ: 'standard' | 'hybrid' | 'satellite'
+  const [mapType, setMapType] = useState('standard');
   const mapRef = useRef(null);
 
   useEffect(() => {
     (async () => {
-      // Yêu cầu quyền GPS trước và ngầm
       const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
       if (fgStatus !== 'granted') {
-        Alert.alert('Từ chối', 'Vui lòng cấp quyền vị trí để ứng dụng hoạt động.');
+        Alert.alert('Thông báo', 'Cần cấp quyền vị trí để hiển thị bản đồ.');
         return;
       }
       await Location.requestBackgroundPermissionsAsync();
 
-      // Lấy vị trí ban đầu
       const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
       setCurrentLoc(loc.coords);
+
+      Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.BestForNavigation, distanceInterval: 2 },
+        (newLoc) => {
+          setCurrentLoc(newLoc.coords);
+          if (followUser && mapRef.current) {
+            mapRef.current.animateCamera({
+              center: { latitude: newLoc.coords.latitude, longitude: newLoc.coords.longitude },
+              heading: newLoc.coords.heading || 0,
+              pitch: 45,
+              zoom: 18,
+            });
+          }
+        }
+      );
     })();
-  }, []);
+  }, [followUser]);
 
   // Cập nhật tuyến đường đang vẽ mỗi giây khi bật ghi
   useEffect(() => {
@@ -60,6 +77,26 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
+  // Hàm chuyển đổi qua lại giữa các kiểu bản đồ
+  const toggleMapType = () => {
+    if (mapType === 'standard') {
+      setMapType('hybrid'); // Sang bản đồ vệ tinh có tên đường
+    } else if (mapType === 'hybrid') {
+      setMapType('satellite'); // Sang vệ tinh nguyên bản
+    } else {
+      setMapType('standard'); // Quay lại bản đồ mặc định
+    }
+  };
+
+  // Tên hiển thị loại bản đồ đang chọn
+  const getMapTypeName = () => {
+    switch (mapType) {
+      case 'hybrid': return 'Vệ tinh (Lai)';
+      case 'satellite': return 'Vệ tinh';
+      default: return 'Tiêu chuẩn';
+    }
+  };
+
   // Bắt đầu ghi lộ trình
   const startRecording = async () => {
     globalRecordedPoints = [];
@@ -69,15 +106,11 @@ export default function App() {
       timeInterval: 1000,
       distanceInterval: 1,
       showsBackgroundLocationIndicator: true,
-      foregroundService: {
-        notificationTitle: "GPX Tracker",
-        notificationBody: "Đang ghi lại lộ trình di chuyển...",
-      }
     });
     setIsRecording(true);
   };
 
-  // Dừng ghi & Xuất file .GPX
+  // Dừng ghi & Xuất file
   const stopRecordingAndExport = async () => {
     const hasStarted = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
     if (hasStarted) {
@@ -90,31 +123,28 @@ export default function App() {
       return;
     }
 
-    // Tạo nội dung GPX
     const gpxString = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="Native GPX Tracker" xmlns="http://www.topografix.com/GPX/1/1">
+<gpx version="1.1" creator="March App" xmlns="http://www.topografix.com/GPX/1/1">
   <trk>
-    <name>Track_${Date.now()}</name>
+    <name>March_${Date.now()}</name>
     <trkseg>
 ${globalRecordedPoints.map(p => `      <trkpt lat="${p.latitude}" lon="${p.longitude}"><ele>${p.altitude}</ele><time>${p.timestamp}</time></trkpt>`).join('\n')}
     </trkseg>
   </trk>
 </gpx>`;
 
-    const fileUri = `${FileSystem.documentDirectory}track_${Date.now()}.gpx`;
+    const fileUri = `${FileSystem.documentDirectory}march_${Date.now()}.gpx`;
     await FileSystem.writeAsStringAsync(fileUri, gpxString, { encoding: FileSystem.EncodingType.UTF8 });
     await Sharing.shareAsync(fileUri);
   };
 
-  // Nạp file GPX để theo dõi lộ trình
+  // Nạp file GPX để theo dõi
   const importGPX = async () => {
     try {
       const res = await DocumentPicker.getDocumentAsync({ type: '*/*' });
       if (res.canceled || !res.assets || res.assets.length === 0) return;
 
       const fileContent = await FileSystem.readAsStringAsync(res.assets[0].uri);
-      
-      // Parser đơn giản trích xuất thẻ <trkpt>
       const regex = /<trkpt\s+lat="([^"]+)"\s+lon="([^"]+)"/g;
       let match;
       const points = [];
@@ -126,21 +156,21 @@ ${globalRecordedPoints.map(p => `      <trkpt lat="${p.latitude}" lon="${p.longi
       }
 
       if (points.length === 0) {
-        Alert.alert('Lỗi', 'Không tìm thấy tọa độ hợp lệ trong file GPX này.');
+        Alert.alert('Lỗi', 'Không tìm thấy tọa độ trkpt trong file GPX.');
         return;
       }
 
       setLoadedRoute(points);
+      setFollowUser(false);
 
-      // Căn bản đồ hiển thị toàn bộ lộ trình tải lên
       if (mapRef.current) {
         mapRef.current.fitToCoordinates(points, {
-          edgePadding: { top: 60, right: 60, bottom: 60, left: 60 },
+          edgePadding: { top: 80, right: 50, bottom: 150, left: 50 },
           animated: true,
         });
       }
     } catch (e) {
-      Alert.alert('Lỗi', 'Không thể đọc file GPX.');
+      Alert.alert('Lỗi', 'Không thể mở file GPX.');
     }
   };
 
@@ -150,35 +180,62 @@ ${globalRecordedPoints.map(p => `      <trkpt lat="${p.latitude}" lon="${p.longi
         ref={mapRef}
         style={styles.map}
         provider={PROVIDER_DEFAULT}
+        mapType={mapType} /* Áp dụng loại bản đồ đang chọn */
         showsUserLocation
-        followsUserLocation
+        showsCompass
+        showsMyLocationButton={false}
+        onTouchStart={() => setFollowUser(false)}
         initialRegion={{
           latitude: currentLoc ? currentLoc.latitude : 21.0285,
           longitude: currentLoc ? currentLoc.longitude : 105.8542,
-          latitudeDelta: 0.01,
-          longitudeDelta: 0.01,
+          latitudeDelta: 0.005,
+          longitudeDelta: 0.005,
         }}
       >
-        {/* Lộ trình đang ghi (màu đỏ) */}
+        {/* Tuyến đường GPX đã nạp (Đường xanh đậm có viền) */}
+        {loadedRoute.length > 0 && (
+          <>
+            <Polyline coordinates={loadedRoute} strokeColor="#00E5FF" strokeWidth={6} />
+            <Marker coordinate={loadedRoute[0]} title="Xuất phát" pinColor="green" />
+            <Marker coordinate={loadedRoute[loadedRoute.length - 1]} title="Đích đến" pinColor="red" />
+          </>
+        )}
+
+        {/* Lộ trình đang ghi (Vệt đỏ phát sáng) */}
         {recordedRoute.length > 0 && (
           <Polyline coordinates={recordedRoute} strokeColor="#FF3B30" strokeWidth={4} />
         )}
-
-        {/* Lộ trình nạp từ file GPX (màu xanh dương) */}
-        {loadedRoute.length > 0 && (
-          <>
-            <Polyline coordinates={loadedRoute} strokeColor="#007AFF" strokeWidth={5} />
-            <Marker coordinate={loadedRoute[0]} title="Điểm bắt đầu" pinColor="green" />
-            <Marker coordinate={loadedRoute[loadedRoute.length - 1]} title="Điểm kết thúc" pinColor="red" />
-          </>
-        )}
       </MapView>
 
-      {/* Thanh công cụ điều khiển */}
+      {/* Thông tin lộ trình nạp */}
+      {loadedRoute.length > 0 && (
+        <View style={styles.routeHeader}>
+          <Text style={styles.routeText}>📍 Lộ trình nạp: {loadedRoute.length} điểm</Text>
+          <TouchableOpacity onPress={() => setLoadedRoute([])}>
+            <Text style={styles.btnDeleteText}>✕ Xóa</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Nút đổi loại bản đồ (Standard -> Hybrid -> Satellite) */}
+      <TouchableOpacity style={styles.btnMapType} onPress={toggleMapType}>
+        <Text style={{ fontSize: 18 }}>🗺️</Text>
+        <Text style={styles.btnMapTypeText}>{getMapTypeName()}</Text>
+      </TouchableOpacity>
+
+      {/* Nút căn giữa vị trí người dùng */}
+      <TouchableOpacity 
+        style={[styles.btnLocate, followUser && styles.btnLocateActive]} 
+        onPress={() => setFollowUser(true)}
+      >
+        <Text style={{ fontSize: 18 }}>🎯</Text>
+      </TouchableOpacity>
+
+      {/* Bảng điều khiển dưới cùng */}
       <View style={styles.panel}>
         {!isRecording ? (
           <TouchableOpacity style={[styles.btn, styles.btnStart]} onPress={startRecording}>
-            <Text style={styles.btnText}>Bắt đầu ghi</Text>
+            <Text style={styles.btnText}>Ghi lộ trình</Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity style={[styles.btn, styles.btnStop]} onPress={stopRecordingAndExport}>
@@ -197,28 +254,74 @@ ${globalRecordedPoints.map(p => `      <trkpt lat="${p.latitude}" lon="${p.longi
 const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { width: '100%', height: '100%' },
-  panel: {
+  routeHeader: {
     position: 'absolute',
-    bottom: 40,
+    top: 55,
     left: 20,
     right: 20,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
-    padding: 12,
+    alignItems: 'center',
+  },
+  routeText: { color: '#FFF', fontWeight: '600', fontSize: 13 },
+  btnDeleteText: { color: '#FF3B30', fontWeight: 'bold', fontSize: 13 },
+  
+  // Nút đổi loại bản đồ
+  btnMapType: {
+    position: 'absolute',
+    right: 20,
+    bottom: 175,
+    backgroundColor: '#FFF',
+    paddingHorizontal: 10,
+    height: 44,
+    borderRadius: 22,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    elevation: 4,
+  },
+  btnMapTypeText: { fontSize: 12, fontWeight: 'bold', color: '#333' },
+
+  // Nút định vị
+  btnLocate: {
+    position: 'absolute',
+    right: 20,
+    bottom: 120,
+    backgroundColor: '#FFF',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    elevation: 4,
+  },
+  btnLocateActive: { borderWidth: 2, borderColor: '#007AFF' },
+
+  panel: {
+    position: 'absolute',
+    bottom: 35,
+    left: 15,
+    right: 15,
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    padding: 10,
     borderRadius: 20,
     shadowColor: '#000',
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.15,
     shadowRadius: 10,
-    elevation: 5,
   },
-  btn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginHorizontal: 5,
-  },
+  btn: { flex: 1, paddingVertical: 13, borderRadius: 12, alignItems: 'center', marginHorizontal: 5 },
   btnStart: { backgroundColor: '#34C759' },
   btnStop: { backgroundColor: '#FF3B30' },
   btnImport: { backgroundColor: '#007AFF' },
