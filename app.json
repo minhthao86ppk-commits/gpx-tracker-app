@@ -1,18 +1,19 @@
 {
-     "expo": {
-       "name": "GPX Tracker",
-       "slug": "gpx-tracker",
-       "version": "1.0.0",
-       "orientation": "portrait",
-       "userInterfaceStyle": "light",
-       "ios": {
-         "supportsTablet": true,
-         "bundleIdentifier": "com.yourname.gpxtracker",
-         "infoPlist": {
-           "UIBackgroundModes": ["location"],
-           "NSLocationWhenInUseUsageDescription": "Ứng dụng cần vị trí để hiển thị trên bản đồ.",
-           "NSLocationAlwaysAndWhenInUseUsageDescription": "Ứng dụng cần vị trí ngầm để ghi lại lộ trình khi tắt màn hình."
-         }
-       }
-     }
-   }
+  "expo": {
+    "name": "March",
+    "slug": "march",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourname.march",
+      "infoPlist": {
+        "UIBackgroundModes": ["location"],
+        "NSLocationWhenInUseUsageDescription": "Ứng dụng cần vị trí để hiển thị trên bản đồ.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Ứng dụng cần vị trí ngầm để ghi lại lộ trình khi tắt màn hình."
+      }
+    }
+  }
+}
