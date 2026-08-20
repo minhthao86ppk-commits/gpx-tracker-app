@@ -10,7 +10,7 @@ import * as DocumentPicker from 'expo-document-picker';
 const LOCATION_TASK_NAME = 'BACKGROUND_LOCATION_RECORD';
 let globalRecordedPoints = [];
 
-// Hàm tính khoảng cách giữa 2 tọa độ (theo mét)
+// Hàm tính khoảng cách giữa 2 tọa độ (mét)
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371e3;
   const phi1 = (lat1 * Math.PI) / 180;
@@ -35,14 +35,14 @@ TaskManager.defineTask(LOCATION_TASK_NAME, ({ data, error }) => {
   locations.forEach(loc => {
     const { latitude, longitude, accuracy, altitude } = loc.coords;
 
-    // Bỏ qua điểm có sai số lớn hơn 15m
-    if (accuracy && accuracy > 15) return;
+    // Lọc các điểm sai số quá lớn (> 30m)
+    if (accuracy && accuracy > 30) return;
 
-    // Chỉ ghi khi di chuyển tối thiểu 4m
+    // Chỉ ghi khi di chuyển tối thiểu 3m
     if (globalRecordedPoints.length > 0) {
       const lastPoint = globalRecordedPoints[globalRecordedPoints.length - 1];
       const dist = calculateDistance(lastPoint.latitude, lastPoint.longitude, latitude, longitude);
-      if (dist < 4) return;
+      if (dist < 3) return;
     }
 
     globalRecordedPoints.push({
@@ -64,43 +64,63 @@ export default function App() {
   const mapRef = useRef(null);
 
   useEffect(() => {
+    let subscriber = null;
+
     (async () => {
+      // 1. Xin quyền vị trí
       const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
       if (fgStatus !== 'granted') {
-        Alert.alert('Thông báo', 'Cần cấp quyền vị trí để hiển thị bản đồ.');
+        Alert.alert('Cần cấp quyền', 'Vui lòng vào Cài đặt cấp quyền Vị trí cho app để hiển thị bản đồ.');
         return;
       }
       await Location.requestBackgroundPermissionsAsync();
 
-      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.BestForNavigation });
-      setCurrentLoc(loc.coords);
+      // 2. Lấy vị trí tức thì ban đầu và kéo camera về ngay
+      try {
+        const initialLoc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        if (initialLoc) {
+          setCurrentLoc(initialLoc.coords);
+          if (mapRef.current) {
+            mapRef.current.animateCamera({
+              center: { latitude: initialLoc.coords.latitude, longitude: initialLoc.coords.longitude },
+              altitude: 400,
+              zoom: 17,
+            }, { duration: 800 });
+          }
+        }
+      } catch (e) {}
 
-      Location.watchPositionAsync(
+      // 3. Theo dõi vị trí liên tục
+      subscriber = await Location.watchPositionAsync(
         {
-          accuracy: Location.Accuracy.BestForNavigation,
+          accuracy: Location.Accuracy.High,
           distanceInterval: 2,
-          timeInterval: 1000
+          timeInterval: 1000,
         },
         (newLoc) => {
-          if (newLoc.coords.accuracy > 20) return;
           setCurrentLoc(newLoc.coords);
 
-          // Cố định camera bám sát lộ trình không bao giờ bị thu nhỏ
           if (followUser && mapRef.current) {
             mapRef.current.animateCamera(
               {
                 center: { latitude: newLoc.coords.latitude, longitude: newLoc.coords.longitude },
                 heading: newLoc.coords.heading || 0,
-                pitch: 40,
-                altitude: 350, // Cố định độ cao 350m chuẩn Apple Maps (cận cảnh đường phố)
-                zoom: 18,
+                pitch: 35,
+                altitude: 400,
+                zoom: 17,
               },
-              { duration: 800 }
+              { duration: 600 }
             );
           }
         }
       );
     })();
+
+    return () => {
+      if (subscriber) subscriber.remove();
+    };
   }, [followUser]);
 
   // Cập nhật đường vẽ đỏ
@@ -113,6 +133,21 @@ export default function App() {
     }
     return () => clearInterval(interval);
   }, [isRecording]);
+
+  // Bấm nút định vị 🎯: Kéo camera về ngay vị trí hiện tại
+  const centerToCurrentLocation = async () => {
+    setFollowUser(true);
+    try {
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      if (loc && mapRef.current) {
+        mapRef.current.animateCamera({
+          center: { latitude: loc.coords.latitude, longitude: loc.coords.longitude },
+          altitude: 400,
+          zoom: 17,
+        }, { duration: 600 });
+      }
+    } catch (e) {}
+  };
 
   const toggleMapType = () => {
     if (mapType === 'standard') setMapType('hybrid');
@@ -134,7 +169,7 @@ export default function App() {
     await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
       accuracy: Location.Accuracy.BestForNavigation,
       activityType: Location.ActivityType.AutomotiveNavigation,
-      distanceInterval: 4,
+      distanceInterval: 3,
       showsBackgroundLocationIndicator: true,
       pausesLocationUpdatesAutomatically: false
     });
@@ -214,14 +249,8 @@ ${globalRecordedPoints.map(p => `      <trkpt lat="${p.latitude}" lon="${p.longi
         showsCompass
         showsMyLocationButton={false}
         onTouchStart={() => setFollowUser(false)}
-        initialRegion={{
-          latitude: currentLoc ? currentLoc.latitude : 21.0285,
-          longitude: currentLoc ? currentLoc.longitude : 105.8542,
-          latitudeDelta: 0.003,
-          longitudeDelta: 0.003,
-        }}
       >
-        {/* Đường lộ trình mẫu nạp GPX */}
+        {/* Lộ trình mẫu từ file GPX */}
         {loadedRoute.length > 0 && (
           <>
             <Polyline coordinates={loadedRoute} strokeColor="#00E5FF" strokeWidth={6} />
@@ -230,7 +259,7 @@ ${globalRecordedPoints.map(p => `      <trkpt lat="${p.latitude}" lon="${p.longi
           </>
         )}
 
-        {/* Tuyến đường đang ghi */}
+        {/* Lộ trình đang ghi thực tế */}
         {recordedRoute.length > 0 && (
           <Polyline coordinates={recordedRoute} strokeColor="#FF3B30" strokeWidth={5} />
         )}
@@ -246,21 +275,21 @@ ${globalRecordedPoints.map(p => `      <trkpt lat="${p.latitude}" lon="${p.longi
         </View>
       )}
 
-      {/* Nút đổi loại bản đồ */}
+      {/* Nút đổi kiểu bản đồ */}
       <TouchableOpacity style={styles.btnMapType} onPress={toggleMapType}>
         <Text style={{ fontSize: 18 }}>🗺️</Text>
         <Text style={styles.btnMapTypeText}>{getMapTypeName()}</Text>
       </TouchableOpacity>
 
-      {/* Nút khóa camera bám theo vị trí xe */}
+      {/* Nút định vị kéo về vị trí thực */}
       <TouchableOpacity 
         style={[styles.btnLocate, followUser && styles.btnLocateActive]} 
-        onPress={() => setFollowUser(true)}
+        onPress={centerToCurrentLocation}
       >
         <Text style={{ fontSize: 18 }}>🎯</Text>
       </TouchableOpacity>
 
-      {/* Bảng điều khiển dưới cùng */}
+      {/* Bảng điều khiển */}
       <View style={styles.panel}>
         {!isRecording ? (
           <TouchableOpacity style={[styles.btn, styles.btnStart]} onPress={startRecording}>
