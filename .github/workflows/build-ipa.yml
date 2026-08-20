@@ -29,7 +29,7 @@ jobs:
           cd ios
           pod install
           xcodebuild -workspace *.xcworkspace \
-            -scheme march \
+            -scheme March \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath build/march.xcarchive \
