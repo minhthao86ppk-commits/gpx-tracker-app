@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>March - GPX Tracker</title>
+  
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body, html { height: 100%; width: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; background: #000; }
+    #map { height: 100vh; width: 100vw; z-index: 1; }
+    
+    #statusBox {
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      right: 15px;
+      z-index: 2000;
+      background: rgba(0, 0, 0, 0.85);
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 13px;
+      text-align: center;
+      border: 1px solid #333;
+    }
+
+    .panel {
+      position: absolute;
+      bottom: 30px;
+      left: 15px;
+      right: 15px;
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(10px);
+      padding: 10px;
+      border-radius: 18px;
+      display: flex;
+      gap: 8px;
+    }
+    
+    button, label.btn {
+      flex: 1;
+      background: #007aff;
+      color: #fff;
+      border: none;
+      padding: 12px 6px;
+      font-size: 14px;
+      font-weight: 600;
+      border-radius: 12px;
+      cursor: pointer;
+      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    button.btn-danger { background: #ff3b30; }
+    button.btn-success { background: #34c759; }
+    input[type="file"] { display: none; }
+    
+    .btn-side {
+      position: absolute;
+      right: 15px;
+      z-index: 1000;
+      background: #fff;
+      height: 42px;
+      border-radius: 21px;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #333;
+      border: none;
+    }
+    #btnLayer { bottom: 150px; }
+    #btnLocate { bottom: 95px; width: 42px; padding: 0; font-size: 18px; }
+    #btnPocket { bottom: 205px; background: #1c1c1e; color: #ffcc00; }
+
+    #pocketOverlay {
+      position: fixed;
+      top: 0; left: 0; width: 100vw; height: 100vh;
+      background: #000000;
+      z-index: 99999;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #888;
+    }
+    #pocketOverlay.active { display: flex; }
+    #pocketOverlay button {
+      background: #222;
+      color: #fff;
+      border: 1px solid #444;
+      padding: 15px 30px;
+      border-radius: 30px;
+      font-size: 15px;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="statusBox">⏳ Đang dò tìm tín hiệu GPS...</div>
+  <div id="map"></div>
+
+  <button id="btnPocket" class="btn-side">🌙 Bỏ túi</button>
+  <button id="btnLayer" class="btn-side">🗺️ Vệ tinh</button>
+  <button id="btnLocate" class="btn-side">🎯</button>
+
+  <div class="panel">
+    <button id="btnRecord" class="btn-success">Ghi lộ trình</button>
+    <button id="btnStop" class="btn-danger" style="display: none;">Dừng & Xuất</button>
+    <label class="btn" for="fileGpx">Nạp GPX</label>
+    <input type="file" id="fileGpx" accept=".gpx" />
+  </div>
+
+  <div id="pocketOverlay">
+    <p>⚡ Đang ghi hành trình (Màn hình OLED đen tiết kiệm pin)</p>
+    <button id="btnExitPocket">Chạm để mở lại màn hình</button>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const statusBox = document.getElementById('statusBox');
+
+    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 });
+    const satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 });
+
+    const map = L.map('map', { layers: [osmLayer], zoomControl: false }).setView([21.0285, 105.8542], 16);
+
+    let currentLayerType = 'standard';
+    let currentMarker = null;
+    let isRecording = false;
+    let recordedPoints = [];
+    let recordPolyline = L.polyline([], { color: '#ff3b30', weight: 5 }).addTo(map);
+    let loadedGpxPolyline = L.polyline([], { color: '#00e5ff', weight: 6 }).addTo(map);
+    let wakeLock = null;
+
+    function getDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371e3;
+      const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
+      const dp = (lat2 - lat1) * Math.PI / 180, dl = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dp/2)**2 + Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    // Bắt đầu theo dõi vị trí GPS
+    if ('geolocation' in navigator) {
+      navigator.geolocation.watchPosition(
+        (pos) => {
+          const { latitude, longitude, accuracy, altitude } = pos.coords;
+          if (accuracy > 30) return; // Lọc điểm sai số
+
+          const latlng = [latitude, longitude];
+
+          statusBox.innerHTML = `🟢 GPS Tốt (Sai số ~${Math.round(accuracy)}m)`;
+          statusBox.style.background = 'rgba(0, 0, 0, 0.75)';
+
+          if (!currentMarker) {
+            currentMarker = L.circleMarker(latlng, { radius: 8, color: '#fff', fillColor: '#007aff', fillOpacity: 1, weight: 3 }).addTo(map);
+            map.setView(latlng, 17);
+          } else {
+            currentMarker.setLatLng(latlng);
+          }
+
+          if (isRecording) {
+            if (recordedPoints.length > 0) {
+              const last = recordedPoints[recordedPoints.length - 1];
+              if (getDistance(last.lat, last.lon, latitude, longitude) < 3) return; // Chống trôi khi đứng yên
+            }
+            recordedPoints.push({ lat: latitude, lon: longitude, ele: altitude || 0, time: new Date().toISOString() });
+            recordPolyline.addLatLng(latlng);
+            statusBox.innerHTML = `🔴 Đang ghi: ${recordedPoints.length} điểm | Sai số: ${Math.round(accuracy)}m`;
+          }
+        },
+        (err) => {
+          statusBox.innerHTML = `⚠️ Lỗi định vị: ${err.message}`;
+          statusBox.style.background = '#ff3b30';
+        },
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+      );
+    }
+
+    async function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+      } catch (err) {}
+    }
+
+    const btnRecord = document.getElementById('btnRecord');
+    const btnStop = document.getElementById('btnStop');
+
+    btnRecord.addEventListener('click', async () => {
+      isRecording = true;
+      recordedPoints = [];
+      recordPolyline.setLatLngs([]);
+      btnRecord.style.display = 'none';
+      btnStop.style.display = 'flex';
+      statusBox.innerHTML = '🔴 Bắt đầu ghi lộ trình...';
+      await requestWakeLock();
+    });
+
+    btnStop.addEventListener('click', () => {
+      isRecording = false;
+      btnRecord.style.display = 'flex';
+      btnStop.style.display = 'none';
+      if (wakeLock) { wakeLock.release(); wakeLock = null; }
+
+      if (recordedPoints.length === 0) return alert('Chưa có tọa độ nào được ghi.');
+
+      const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="march"><trk><name>march_${Date.now()}</name><trkseg>\n` +
+        recordedPoints.map(p => `  <trkpt lat="${p.lat}" lon="${p.lon}"><ele>${p.ele}</ele><time>${p.time}</time></trkpt>`).join('\n') +
+        `\n</trkseg></trk></gpx>`;
+
+      const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `march_${Date.now()}.gpx`;
+      a.click();
+      statusBox.innerHTML = '✅ Đã xuất file GPX thành công';
+    });
+
+    document.getElementById('fileGpx').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const parser = new DOMParser();
+        const xml = parser.parseFromString(evt.target.result, "text/xml");
+        const pts = Array.from(xml.querySelectorAll("trkpt")).map(pt => [
+          parseFloat(pt.getAttribute("lat")),
+          parseFloat(pt.getAttribute("lon"))
+        ]);
+        if (pts.length > 0) {
+          loadedGpxPolyline.setLatLngs(pts);
+          map.fitBounds(loadedGpxPolyline.getBounds(), { padding: [40, 40] });
+          statusBox.innerHTML = `📍 Đã nạp lộ trình mẫu: ${pts.length} điểm`;
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    const btnLayer = document.getElementById('btnLayer');
+    btnLayer.addEventListener('click', () => {
+      if (currentLayerType === 'standard') {
+        map.removeLayer(osmLayer);
+        map.addLayer(satLayer);
+        currentLayerType = 'satellite';
+        btnLayer.innerText = '🗺️ Tiêu chuẩn';
+      } else {
+        map.removeLayer(satLayer);
+        map.addLayer(osmLayer);
+        currentLayerType = 'standard';
+        btnLayer.innerText = '🗺️ Vệ tinh';
+      }
+    });
+
+    document.getElementById('btnLocate').addEventListener('click', () => {
+      if (currentMarker) map.setView(currentMarker.getLatLng(), 17);
+    });
+
+    const pocketOverlay = document.getElementById('pocketOverlay');
+    document.getElementById('btnPocket').addEventListener('click', () => pocketOverlay.classList.add('active'));
+    document.getElementById('btnExitPocket').addEventListener('click', () => pocketOverlay.classList.remove('active'));
+  </script>
+</body>
+</html>
